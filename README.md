@@ -12,10 +12,13 @@ Web portal:
 
 ## Hardware
 
+All pcb source files (EasyEDA) including gerber, schematic etc. are included in the pcb directory.
+
 - **ESP32**: Massive overkill but I had some left so I used them
 - **E-paper display**: 4.2" 400x300 black & white e-paper. HINK-E042A13-A0 or similar can be used (with the centered flex cable)
 - **CO2, temperature, humidity**: Sensirion SCD4x for CO2 and SHT30 for temperature and humidity.
 - **CO2 sensor is optional**: If you don't need it, disable it in the settings and the screen switches to a big temperature + humidity layout.
+- **USB-C** for charging and upload / debugging
 - **Long battery life**: The ESP32 spends almost all its time in deep sleep. WiFi is only on for the few seconds it takes to send the data and the CO2 sensor also runs in low power mode. Coupled with (insane) 2x 18650 slot, it can run for years easily.
 - **Battery options**: You can omit the 18650 slots and battery protection and use a flat lipo battery instead
 - **Integrated TP4057** lipo charger

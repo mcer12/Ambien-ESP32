@@ -42,7 +42,7 @@ VARIANTS = {
 }
 # Variants rendered in the light theme (same placeholder values as the variant named after "light_")
 LIGHT = {"light_mqtt_on": "mqtt_on"}
-SIZES = {"phone": 500, "desktop": 1280}  # headless Edge/Chrome windows are at least ~500 px wide
+SIZES = {"phone": 500, "desktop": 800}  # headless Edge/Chrome windows are at least ~500 px wide
 
 
 def raw_literal(source, name):

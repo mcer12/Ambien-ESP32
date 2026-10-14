@@ -51,6 +51,7 @@ every measurement is published over MQTT, with Home Assistant MQTT discovery.
 | `lib/AmbienMqtt/` | Arduino-independent MQTT payload / discovery JSON builders (unit tested) |
 | `test/` | Unity tests of `lib/` |
 | `tools/render_portal.py` | Screenshots of the settings page (see Tests and tools) |
+| `pcb/` | EasyEDA (Standard) schematic / board source, gerbers, BOM and pick-and-place (exports, edited in EasyEDA only) |
 | `README.md`, `images/` | Public readme; `images/` holds copies of renders from `screenshots/` (refresh them when screens change) |
 | `tools/make_webfonts.py`, `src/web_fonts.h` | PixelFonts converted to WOFF2 web fonts for the portal (generated header, served under `/fonts/`) |
 | `src/wifi_manager.*` | WiFi station connect and the setup AP (`Ambien_` + last 4 hex digits of the MAC, `deviceSuffix()`, open network, `192.168.0.1`) |
