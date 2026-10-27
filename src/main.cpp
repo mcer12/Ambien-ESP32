@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <functional>
 #include <Wire.h>
 #include <LittleFS.h>
 #include <esp_sleep.h>
@@ -16,7 +17,6 @@
 #define BUTTON_1 35
 #define BUTTON_2 32
 #define ADC 34
-#define CALIBRATION_PPM 430
 #define AP_NAME_PREFIX "Ambien_"
 
 enum DeviceState {
@@ -36,6 +36,8 @@ float voltage;
 
 // Kept across deep sleep: the last WiFi connection attempt failed, so button 2 means "try again"
 RTC_DATA_ATTR bool wifiConnectFailed = false;
+// Kept across deep sleep: the SCD4x has measured for CO2_WARMUP_S, so this wakeup can read it
+RTC_DATA_ATTR bool co2WarmedUp = false;
 
 WiFiManager wifiManager;
 WebPortal webPortal;
@@ -52,7 +54,7 @@ void handleButton2Local(unsigned long timeout);
 void handleServerMode(bool apMode, unsigned long timeout);
 ServerExit runAPServer(unsigned long timeout);
 ServerExit runLocalServer(unsigned long timeout);
-ServerExit serverLoop(unsigned long timeout);
+ServerExit serverLoop(unsigned long timeout, std::function<void()> redraw);
 String getAPName();
 void displayAPServerInfo(unsigned long timeout, String btn1Label, String btn2Label);
 bool hasWiFiSettings();
@@ -60,6 +62,13 @@ void fallbackAP(String reason);
 void sleepUntilSetup(String reason);
 void sleepUnableToConnect();
 void sleepBeforeFirstReading();
+void sleepUntilMeasurement();
+void idleCo2Sensor();
+void warmUpCo2Sensor();
+void endCo2Cycle();
+bool calibrateCo2Sensor();
+bool co2DutyCycled();
+int wakeIntervalMinutes();
 void handleSoftwareReset();
 void goToDeepSleep(uint32_t sleepSeconds = 0);
 void goToDeepSleepIndefinitely();
@@ -136,8 +145,7 @@ void loop()
             
         case STATE_BUTTON1_AP:
         case STATE_BUTTON2_LOCAL:
-            // Without WiFi settings (First run? screen / offline mode): button 1 starts the setup AP, button 2
-            // switches to offline mode or, already offline, refreshes the measurement
+            // Without WiFi settings: button 1 starts the setup AP, button 2 goes offline or refreshes
             if (!hasWiFiSettings() && currentState == STATE_BUTTON1_AP) {
                 fallbackAP("No settings saved");
             } else if (!hasWiFiSettings()) {
@@ -145,6 +153,7 @@ void loop()
                     Serial.println("[MAIN] Offline mode selected");
                     setOfflineMode(true);
                 }
+                warmUpCo2Sensor();
                 measureAndSleep(false);
             } else if (currentState == STATE_BUTTON1_AP) {
                 handleButton1AP(WEBSERVER_TIMEOUT_FORCED);
@@ -164,6 +173,7 @@ void handleTimerWakeup() {
     
     if (!hasWiFiSettings() && offlineMode()) {
         Serial.println("[MAIN] Offline mode - measuring without WiFi");
+        warmUpCo2Sensor();
         measureAndSleep(false);
         return;
     }
@@ -173,6 +183,8 @@ void handleTimerWakeup() {
         fallbackAP("No settings saved");
         return;
     }
+
+    warmUpCo2Sensor();
 
     Serial.println("[MAIN] Attempting to connect to WiFi...");
     wifiManager.begin();
@@ -195,19 +207,28 @@ void measureAndSleep(bool online) {
     eink_init();
 
     if (co2SensorEnabled()) scd4x_readData();
+    // A sensor that did not deliver a reading is in no state to be calibrated
+    bool calibrated = co2SensorEnabled() && calibrationPending() && scd4x_co2 > 0 && calibrateCo2Sensor();
+    endCo2Cycle();
     sht30_readData();
 
     if (online) {
-        // Publish first, then switch the radio off before the ~3 s display refresh (battery, less heat)
-        AmbienReadings readings = {sht30_temp, sht30_humidity, co2SensorEnabled() && scd4x_co2 > 0, scd4x_co2, voltage};
+        // Radio off before the ~3 s refresh (battery, less heat). A recalibrated wakeup read CO2 before the fix
+        AmbienReadings readings = {sht30_temp, sht30_humidity,
+                                   !calibrated && co2SensorEnabled() && scd4x_co2 > 0, scd4x_co2, voltage};
         mqtt_publishMeasurement(readings);
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
     }
 
-    int wake_interval = json["wake_interval"].isNull() ? 30 : json["wake_interval"].as<int>();
+    // A reading taken before the recalibration would look like the calibration had been ignored
+    if (calibrated) {
+        eink_displayCalibrated(CO2_WARMUP_S, "AP MODE", "LOCAL SERVER");
+        sleepUntilMeasurement();
+    }
+
     eink_printSensorsData(co2SensorEnabled(), voltage, online ? json["ssid"].as<String>() : String(""),
-                          wake_interval, "AP MODE", online ? "LOCAL SERVER" : "REFRESH");
+                          wakeIntervalMinutes(), "AP MODE", online ? "LOCAL SERVER" : "REFRESH");
 
     Serial.println("[MAIN] Sensor reading complete, going to deep sleep");
 
@@ -225,7 +246,7 @@ void handleButton2Local(unsigned long timeout) {
 // Button 1 switches AP <-> Local in place; button 2 or the timeout sleeps briefly, then measures
 void handleServerMode(bool apMode, unsigned long timeout) {
     Wire.begin();
-    if (co2SensorEnabled()) scd4x_init();
+    idleCo2Sensor();
     sht30_init();
     eink_init();
 
@@ -250,9 +271,10 @@ ServerExit runAPServer(unsigned long timeout) {
     webPortal.setBatteryVoltage(voltage);
     webPortal.begin();
 
-    displayAPServerInfo(timeout, "SWITCH TO LOCAL", "SLEEP");
+    auto redraw = [timeout]() { displayAPServerInfo(timeout, "SWITCH TO LOCAL", "SLEEP"); };
+    redraw();
 
-    return serverLoop(timeout);
+    return serverLoop(timeout, redraw);
 }
 
 ServerExit runLocalServer(unsigned long timeout) {
@@ -273,16 +295,21 @@ ServerExit runLocalServer(unsigned long timeout) {
                    + "Address: http://" + WiFi.localIP().toString();
     String instructions = "Open the address in a browser on a phone or computer\n"
                           "connected to the same WiFi network.";
-    eink_displayWebServerInfo("Local Server", details, instructions, batteryVoltage, timeout, "SWITCH TO AP", "SLEEP");
+    auto redraw = [=]() {
+        eink_displayWebServerInfo("Local Server", details, instructions, batteryVoltage, timeout, "SWITCH TO AP", "SLEEP");
+    };
+    redraw();
 
-    return serverLoop(timeout);
+    return serverLoop(timeout, redraw);
 }
 
-ServerExit serverLoop(unsigned long timeout) {
+ServerExit serverLoop(unsigned long timeout, std::function<void()> redraw) {
     webserverStartTime = millis();
 
     while (true) {
         webPortal.handleClient();
+
+        if (webPortal.themeChanged()) redraw();
 
         if (webPortal.shouldRestart()) {
             Serial.println("[MAIN] Restarting...");
@@ -333,7 +360,7 @@ void fallbackAP(String reason) {
     Serial.println("[MAIN] Starting fallback AP mode: " + reason);
 
     Wire.begin();
-    if (co2SensorEnabled()) scd4x_init();
+    idleCo2Sensor();
     sht30_init();
     eink_init();
 
@@ -342,12 +369,15 @@ void fallbackAP(String reason) {
     webPortal.begin();
 
     // No WiFi credentials to switch to: button 1 sleeps, button 2 switches to offline mode
-    displayAPServerInfo(WEBSERVER_TIMEOUT_FORCED, "SLEEP", "OFFLINE MODE");
+    auto redraw = []() { displayAPServerInfo(WEBSERVER_TIMEOUT_FORCED, "SLEEP", "OFFLINE MODE"); };
+    redraw();
 
     webserverStartTime = millis();
 
     while(true) {
         webPortal.handleClient();
+
+        if (webPortal.themeChanged()) redraw();
 
         if (webPortal.shouldRestart()) {
             Serial.println("[MAIN] Restarting...");
@@ -361,11 +391,11 @@ void fallbackAP(String reason) {
             sleepUntilSetup(reason);
         }
         if (button == 2) {
-            // Offline mode: stop the AP and measure after a short sleep (radio off, electronics cooler)
+            // Offline mode: stop the AP and measure after a sleep (radio off, electronics cooler)
             Serial.println("[MAIN] Button 2 pressed, offline mode");
             if (!offlineMode()) setOfflineMode(true);
             webPortal.stop();
-            goToDeepSleep(FIRST_READING_DELAY_S);
+            sleepUntilMeasurement();
         }
 
         if (millis() - webserverStartTime >= WEBSERVER_TIMEOUT_FORCED) {
@@ -382,9 +412,13 @@ void sleepUntilSetup(String reason) {
     webPortal.stop();
     if (offlineMode()) {
         Serial.println("[MAIN] Setup AP closed, back to offline mode");
-        goToDeepSleep(FIRST_READING_DELAY_S);
+        sleepUntilMeasurement();
     }
     Serial.println("[MAIN] Setup needed: " + reason);
+    if (co2SensorEnabled()) {
+        scd4x_stop();
+        co2WarmedUp = false;
+    }
     eink_displaySetupNeeded("AP MODE", "OFFLINE MODE");
     goToDeepSleepIndefinitely();
 }
@@ -392,15 +426,65 @@ void sleepUntilSetup(String reason) {
 // Keeps the normal wake timer so the device retries at the next interval
 void sleepUnableToConnect() {
     wifiConnectFailed = true;
+    Wire.begin();
+    endCo2Cycle();
     eink_init();
-    int wake_interval = json["wake_interval"].isNull() ? 30 : json["wake_interval"].as<int>();
-    eink_displayUnableToConnect(json["ssid"].as<String>(), wake_interval, "AP MODE", "TRY AGAIN");
+    eink_displayUnableToConnect(json["ssid"].as<String>(), wakeIntervalMinutes(), "AP MODE", "TRY AGAIN");
     goToDeepSleep();
 }
 
 void sleepBeforeFirstReading() {
-    eink_displayFirstReadingNotice("AP MODE", "LOCAL SERVER");
+    eink_displayFirstReadingNotice(co2SensorEnabled() ? CO2_WARMUP_S : FIRST_READING_DELAY_S,
+                                   co2SensorEnabled() && calibrationPending(), "AP MODE", "LOCAL SERVER");
+    sleepUntilMeasurement();
+}
+
+// The SCD4x idles through a server session (the warm-up only counts right before a reading)
+void idleCo2Sensor() {
+    if (!co2SensorEnabled()) return;
+    scd4x_idle();
+    co2WarmedUp = false;
+}
+
+// The SCD4x measures through the sleep
+void sleepUntilMeasurement() {
+    if (co2SensorEnabled()) {
+        Wire.begin();
+        scd4x_start();
+        co2WarmedUp = true;
+        goToDeepSleep(CO2_WARMUP_S);
+    }
     goToDeepSleep(FIRST_READING_DELAY_S);
+}
+
+// Returns only when the SCD4x is ready to be read; otherwise starts it and sleeps through the warm-up
+void warmUpCo2Sensor() {
+    if (!co2SensorEnabled() || co2WarmedUp) return;
+    Serial.printf("[MAIN] Starting CO2 sensor warm-up (%u s)\n", CO2_WARMUP_S);
+    sleepUntilMeasurement();
+}
+
+// Idles the SCD4x until the next warm-up; with a wake interval too short for a warm-up it keeps measuring
+void endCo2Cycle() {
+    if (!co2DutyCycled()) return;
+    scd4x_stop();
+    co2WarmedUp = false;
+}
+
+// Stays armed when the recalibration fails, so the next measurement retries it
+bool calibrateCo2Sensor() {
+    float correction = 0.0f;
+    if (!scd4x_calibrate(CALIBRATION_PPM, &correction)) return false;
+    finishCalibration(correction);
+    return true;
+}
+
+bool co2DutyCycled() {
+    return co2SensorEnabled() && wakeIntervalMinutes() * 60 > (int)CO2_WARMUP_S;
+}
+
+int wakeIntervalMinutes() {
+    return json["wake_interval"].isNull() ? 30 : json["wake_interval"].as<int>();
 }
 
 // Returns 1 or 2 for the pressed button (after release + debounce), 0 if none
@@ -464,14 +548,12 @@ void goToDeepSleep(uint32_t sleepSeconds) {
     Serial.println("[MAIN] Configuring deep sleep");
 
     if (sleepSeconds == 0) {
-        int wake_interval = json["wake_interval"].isNull() ? 30 : json["wake_interval"].as<int>();
-        Serial.print("[MAIN] Wake interval: ");
-        Serial.print(wake_interval);
-        Serial.println(" minutes");
-        sleepSeconds = wake_interval * 60;
-    } else {
-        Serial.printf("[MAIN] Sleeping for %u s\n", sleepSeconds);
+        Serial.printf("[MAIN] Wake interval: %d minutes\n", wakeIntervalMinutes());
+        sleepSeconds = wakeIntervalMinutes() * 60;
+        // The next wakeup only starts the CO2 warm-up: readings stay wake_interval apart
+        if (co2DutyCycled()) sleepSeconds -= CO2_WARMUP_S;
     }
+    Serial.printf("[MAIN] Sleeping for %u s\n", sleepSeconds);
 
     uint64_t sleep_time_us = sleepSeconds * 1000000ULL;
     esp_sleep_enable_timer_wakeup(sleep_time_us);

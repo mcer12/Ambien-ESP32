@@ -7,45 +7,81 @@ uint16_t scd4x_co2 = 0;
 float scd4x_temp = 0.0f;
 float scd4x_humidity = 0.0f;
 
+static const uint16_t SENSOR_ALTITUDE_M = 194;
+
+static bool measuring = false;
+
 void scd4x_begin()
 {
-    scd4x.begin(false, true, true, false);
+    scd4x.begin(false, false, true, false);
 }
 
-void scd4x_init()
+void scd4x_idle()
 {
-    scd4x.begin(false, true, true, false);
+    scd4x.begin(false, false, false, false);
+    measuring = false;
+    Serial.println("[SCD4x] Idle");
+}
 
-    if (scd4x.stopPeriodicMeasurement(500) == true)
+bool scd4x_start()
+{
+    if (!scd4x.begin(false, false, true, false))
     {
-        Serial.println("Periodic measurement stopped");
+        scd4x.stopPeriodicMeasurement(0);
+        delay(1000);
+        scd4x.begin(false, false, true, false);
     }
 
-    Serial.print("SCD4x Altitude: ");
-    Serial.println(scd4x.getSensorAltitude());
-
-    delay(1);
-
-    Serial.print("SCD4x Temperature offset: ");
-    Serial.println(scd4x.getTemperatureOffset());
-
-    delay(1);
-
-    if (scd4x.setSensorAltitude(194, 1) == true)
+    if (!scd4x.setSensorAltitude(SENSOR_ALTITUDE_M, 1))
     {
-        Serial.println("Failed to set altitude");
+        Serial.println("[SCD4x] Failed to set altitude");
     }
 
-    if (scd4x.startLowPowerPeriodicMeasurement() == true)
+    if (scd4x.startLowPowerPeriodicMeasurement())
     {
-        Serial.println("Low power periodic measurement enabled!");
+        measuring = true;
+        Serial.println("[SCD4x] Low power periodic measurement started");
+        return true;
     }
-    else
-    {
-        Serial.println("Failed to start low power measurement");
-    }
+    Serial.println("[SCD4x] Failed to start low power periodic measurement");
+    return false;
+}
 
-    Serial.println("SCD4x sensor initialized!");
+bool scd4x_stop(uint16_t waitMs)
+{
+    if (scd4x.stopPeriodicMeasurement(waitMs))
+    {
+        measuring = false;
+        Serial.println("[SCD4x] Measurement stopped");
+        return true;
+    }
+    Serial.println("[SCD4x] Failed to stop measurement");
+    return false;
+}
+
+bool scd4x_isMeasuring()
+{
+    return measuring;
+}
+
+bool scd4x_calibrate(uint16_t ppm, float* correction)
+{
+    if (!scd4x_stop(500))
+    {
+        Serial.println("[SCD4x] Calibration aborted: failed to stop the measurement");
+        return false;
+    }
+    if (!scd4x.performForcedRecalibration(ppm, correction))
+    {
+        Serial.println("[SCD4x] Forced recalibration failed");
+        return false;
+    }
+    if (!scd4x.persistSettings(800))
+    {
+        Serial.println("[SCD4x] Failed to persist the settings");
+    }
+    Serial.printf("[SCD4x] Recalibrated to %u ppm, correction %.1f ppm\n", ppm, *correction);
+    return true;
 }
 
 void scd4x_readData()
@@ -55,8 +91,6 @@ void scd4x_readData()
         scd4x_co2 = scd4x.getCO2();
         scd4x_temp = scd4x.getTemperature();
         scd4x_humidity = scd4x.getHumidity();
-        float tempOffset = scd4x.getTemperatureOffset();
-        uint16_t altitude = scd4x.getSensorAltitude();
 
         Serial.print("SCD4x CO2: ");
         Serial.print(scd4x_co2);
@@ -67,12 +101,6 @@ void scd4x_readData()
         Serial.print("SCD4x H: ");
         Serial.print(scd4x_humidity, 1);
         Serial.println(" %RH");
-        Serial.print("SCD4x T Offset: ");
-        Serial.print(tempOffset, 1);
-        Serial.println(" ");
-        Serial.print("SCD4x Altitude: ");
-        Serial.print(altitude);
-        Serial.println(" ");
     }
     else
     {

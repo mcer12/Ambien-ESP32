@@ -14,12 +14,14 @@ public:
     void stop();
     void handleClient();
     bool shouldRestart();
+    bool themeChanged();
     void setBatteryVoltage(float volts);
     
 private:
     WebServer server;
     DNSServer dnsServer;
     bool restartFlag;
+    bool themeChangedFlag;
     bool routesSet;
     float batteryVoltage;
     
@@ -27,6 +29,7 @@ private:
     void handleRoot();
     void handleFormSubmit();
     void handleCalibrate();
+    void handleTheme();
     
     String getHTMLHeader();
     String getSettingsPage();

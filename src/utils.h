@@ -16,6 +16,19 @@ bool co2SensorEnabled();
 bool offlineMode();
 void setOfflineMode(bool on);  // saves the config
 
+// On unless "dark_mode" is false
+bool darkMode();
+void setDarkMode(bool on);  // saves the config
+
+// Armed in the portal, performed at the next measurement
+bool calibrationPending();
+void armCalibration();                     // saves the config
+void cancelCalibration();                  // saves the config
+void finishCalibration(float correction);  // clears the flag, stores the correction, saves the config
+
+// Above 4.3 V the battery is on the charger: a resting Li-ion cell stays at or below 4.2 V
+bool batteryCharging(float voltage);
+
 bool mqttEnabled();
 // "hass_register": true, or "yes" from older firmware
 bool hassRegisterPending();
@@ -27,5 +40,7 @@ void clearHassRegister();  // saves the config
 String deviceSuffix();
 
 String macToStr(const uint8_t* mac);
+
+String htmlEscape(String text);
 
 #endif // UTILS_H

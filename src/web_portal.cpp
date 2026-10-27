@@ -2,11 +2,11 @@
 #include "scd4x_fns.h"
 #include "mqtt_fns.h"
 #include "web_fonts.h"
+#include "diagnostics.h"
 
-#define CALIBRATION_PPM 430
 
 static const char HTML_HEADER[] PROGMEM = R"rawliteral(
-<!DOCTYPE html><html><head><meta charset="UTF-8">
+<!DOCTYPE html><html%THEME%><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=0">
 <title>Ambien - ESP32 CO2 Monitor</title>
 <style>
@@ -29,7 +29,7 @@ html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font:16px/
 .crisp[data-theme="light"] button span{filter:url(#crisp);}
 .crisp button:hover span{filter:url(#crisp);}
 .crisp[data-theme="light"] button:hover span{filter:url(#crisp-dark-text);}
-.wrapper,button span,.links a,.footer span{position:relative;}
+.wrapper,button span,.links a{position:relative;}
 a{color:var(--ink);}
 ::selection{background-color:#ffd400;color:#000;}
 .wrapper{max-width:600px;margin:auto;padding:32px 16px;}
@@ -71,20 +71,32 @@ option{color:var(--ink);background:var(--paper);}
 .check input:checked{background:var(--ink);box-shadow:inset 0 0 0 3px var(--paper);}
 .hint{margin:8px 0 0 0;overflow-wrap:anywhere;}
 .status{color:var(--ink);font-weight:700;}
-button{display:block;width:100%;height:48px;margin:32px 0 0 0;padding:0;font:700 16px PixelText,monospace;text-transform:uppercase;color:var(--paper);background:var(--ink);border:2px solid var(--ink);border-radius:0;cursor:pointer;}
+button{display:block;width:100%;height:48px;margin:32px 0 0 0;padding:0;font:700 16px PixelText,monospace;text-transform:uppercase;color:var(--paper);background:var(--ink);border:2px solid var(--ink);border-radius:0;cursor:pointer;transition:color .15s,background-color .15s;}
 button:hover{color:var(--ink);background:var(--paper);}
 .links{margin:24px 0 0 0;text-align:center;color:var(--ink);}
-.footer{margin:8px 0 0 0;text-align:center;font-family:PixelSmall,monospace;color:var(--gray);}
+.footer{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:8px 0 0 0;font-family:PixelSmall,monospace;color:var(--gray);}
 .footer a{color:var(--gray);}
+.footer .sep{margin:0 6px;}
+button.diag-toggle{display:block;flex:none;width:16px;height:16px;margin:0;padding:0;border:0;color:var(--gray);background:transparent;cursor:pointer;}
+button.diag-toggle:hover{background:transparent;}
+button.diag-toggle[aria-expanded="true"]{color:var(--ink);}
+button.diag-toggle svg{display:block;}
+.diag{margin:24px 0 0 0;}
+.diag h3{margin:24px 0 8px 0;font:700 16px/24px PixelText,monospace;}
+.diag h3:first-child{margin-top:0;}
+/* Fixed label column: a percentage would put the values at x.5 px, where the crisp filters erase 1px strokes */
+.diag table{width:100%;border-collapse:collapse;table-layout:fixed;}
+.diag td{padding:0;vertical-align:top;overflow-wrap:anywhere;font:16px/16px PixelSmall,monospace;}
+.diag td:first-child{width:168px;padding-right:16px;color:var(--gray);}
 @media all and (max-width:520px){
 .wrapper{padding:24px 0;}
 .title{padding:0 16px;}
 .version,.title p{display:none;}
 .container{padding:24px 0;margin:0 16px;border-width:3px 0;box-shadow:none;}
+.footer,.diag{padding:0 16px;}
 }
 </style>
-<script>try{if(localStorage.getItem('theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}
-function crispCheck(){document.documentElement.classList.toggle('crisp',window.devicePixelRatio===1);}
+<script>function crispCheck(){document.documentElement.classList.toggle('crisp',window.devicePixelRatio===1);}
 crispCheck();window.addEventListener('resize',crispCheck);</script>
 </head><body>
 <svg width="0" height="0" style="position:absolute"><filter id="crisp" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="discrete" tableValues="0 0 0 1 1"/></feComponentTransfer></filter><filter id="crisp-dark-text" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="discrete" tableValues="0 1"/></feComponentTransfer></filter></svg>
@@ -92,13 +104,14 @@ crispCheck();window.addEventListener('resize',crispCheck);</script>
 
 static const char HTML_FOOTER[] PROGMEM = R"rawliteral(
 </div>
-<div class="footer"><span>Ambien-ESP32 | Firmware version: %FW_VERSION% | <a href="https://github.com/mcer12/Ambien-ESP32" target="_blank">Visit project's GitHub</a></span></div>
+<div class="footer"><span>Ambien-ESP32 <span class="sep">|</span> Firmware v%FW_VERSION% <span class="sep">|</span> <a href="https://github.com/mcer12/Ambien-ESP32" target="_blank">Visit project's GitHub</a></span><button type="button" class="diag-toggle" aria-label="Sensor and device data" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" shape-rendering="crispEdges" fill="currentColor"><path d="M6 0h4v2h-4zM2 2h2v1h-2zM6 2h4v1h-4zM12 2h2v1h-2zM2 3h12v1h-12zM3 4h10v1h-10zM3 5h4v1h-4zM9 5h4v1h-4zM0 6h6v1h-6zM10 6h6v1h-6zM0 7h5v2h-5zM11 7h5v2h-5zM0 9h6v1h-6zM10 9h6v1h-6zM3 10h4v1h-4zM9 10h4v1h-4zM3 11h10v1h-10zM2 12h12v1h-12zM2 13h2v1h-2zM6 13h4v1h-4zM12 13h2v1h-2zM6 14h4v2h-4z"/></svg></button></div>
+<div class="diag" id="diag" hidden></div>
 </div>
 <script>
 // Centered content can land on x.5 px, which the crisp filters would thin or erase: shift it onto a whole pixel
 function snapToPixels() {
   // page column first: an odd free width centers it at x.5 px
-  ['.wrapper', 'button span, .links a, .footer span'].forEach(function (selector) {
+  ['.wrapper', 'button span, .links a'].forEach(function (selector) {
     document.querySelectorAll(selector).forEach(function (el) {
       el.style.left = '0px';
       var x = el.getBoundingClientRect().left;
@@ -113,7 +126,22 @@ document.querySelectorAll('.theme-switch').forEach(function (button) {
     var light = document.documentElement.getAttribute('data-theme') !== 'light';
     if (light) document.documentElement.setAttribute('data-theme', 'light');
     else document.documentElement.removeAttribute('data-theme');
-    try { localStorage.setItem('theme', light ? 'light' : 'dark'); } catch (e) {}
+    fetch('/theme', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                     body: 'dark=' + (light ? '0' : '1')});
+  });
+});
+// Read fresh on every opening: the device reads the sensors only when asked
+document.querySelectorAll('.diag-toggle').forEach(function (button) {
+  var diag = document.getElementById('diag');
+  button.addEventListener('click', function () {
+    var open = diag.hidden;
+    diag.hidden = !open;
+    button.setAttribute('aria-expanded', open);
+    if (!open) return;
+    diag.innerHTML = '<p>Reading the sensors...</p>';
+    fetch('/diag').then(function (response) { return response.text(); })
+      .then(function (html) { diag.innerHTML = html; })
+      .catch(function () { diag.innerHTML = '<p>Could not read the sensor data.</p>'; });
   });
 });
 window.addEventListener('resize', snapToPixels);
@@ -180,7 +208,8 @@ document.getElementById('mqtt_enabled').addEventListener('change', function () {
 </script>
 )rawliteral";
 
-WebPortal::WebPortal() : server(80), restartFlag(false), routesSet(false), batteryVoltage(0) {}
+WebPortal::WebPortal() : server(80), restartFlag(false), themeChangedFlag(false), routesSet(false),
+                         batteryVoltage(0) {}
 
 void WebPortal::setBatteryVoltage(float volts)
 {
@@ -219,9 +248,15 @@ void WebPortal::setupRoutes()
               { handleFormSubmit(); });
 
     server.on("/calibrate", HTTP_GET, [this]()
-    { 
-            handleCalibrate();  
+    {
+            handleCalibrate();
     });
+
+    server.on("/diag", HTTP_GET, [this]()
+              { server.send(200, "text/html", diagnosticsHtml()); });
+
+    server.on("/theme", HTTP_POST, [this]()
+              { handleTheme(); });
 
     for (const WebFont& font : WEB_FONTS) {
         server.on(font.path, HTTP_GET, [this, &font]()
@@ -256,6 +291,13 @@ void WebPortal::handleClient()
 bool WebPortal::shouldRestart()
 {
     return restartFlag;
+}
+
+bool WebPortal::themeChanged()
+{
+    bool changed = themeChangedFlag;
+    themeChangedFlag = false;
+    return changed;
 }
 
 void WebPortal::handleRoot()
@@ -367,54 +409,40 @@ void WebPortal::handleCalibrate()
     }
 
     html += "<h2>Calibration</h2>";
-    html += "<p>Forced recalibration of the SCD4x sensor to 430 ppm CO2.</p>";
-    html += "<p>The sensor must have been in a stable environment with a known CO2 concentration (typically 430 ppm outdoor air) for at least 3 minutes.</p>";
 
-    Serial.println("[CAL] Stopping periodic measurements...");
-    if (scd4x.stopPeriodicMeasurement(500) == false) {
-        html += "<p class=\"status\">Error: failed to stop the periodic measurements.</p>";
-        html += "<p>The sensor may not be connected or initialized properly.</p>";
-        html += backLink;
-        html += getHTMLFooter();
-        server.send(500, "text/html", html);
-        Serial.println("[CAL] Failed to stop periodic measurements");
-        return;
-    }
-    
-    Serial.println("[CAL] Periodic measurements stopped, performing calibration...");
-    
-    float correction = 0.0;
-    bool success = scd4x.performForcedRecalibration(CALIBRATION_PPM, &correction);
-    
-    if (success && correction != 0xFFFF) {
-        html += "<p class=\"status\">Calibration successful.</p>";
-        html += "<p>Correction: " + String(correction, 1) + " ppm. The sensor is calibrated to " + String(CALIBRATION_PPM) + " ppm.</p>";
-        Serial.printf("[CAL] Calibration successful! Correction: %.1f ppm\n", correction);
+    if (server.hasArg("cancel")) {
+        cancelCalibration();
+        html += "<p class=\"status\">Calibration cancelled.</p>";
+        Serial.println("[CAL] Calibration cancelled");
     } else {
-        html += "<p class=\"status\">Calibration failed.</p>";
-        html += "<p>Possible reasons: the sensor was not in a stable environment, the CO2 concentration is not at the "
-                "target value, or the warm-up time was too short (needs 3+ minutes).</p>";
-        Serial.println("[CAL] Calibration failed!");
-    }
-
-    Serial.println("[CAL] Restarting low power periodic measurements...");
-    if (scd4x.startLowPowerPeriodicMeasurement() == true) {
-        html += "<p>Low power periodic measurements restarted.</p>";
-        Serial.println("[CAL] Low power periodic measurements restarted");
-    } else {
-        html += "<p class=\"status\">Warning: failed to restart the periodic measurements.</p>";
-        Serial.println("[CAL] Failed to restart measurements");
+        armCalibration();
+        html += "<p class=\"status\">Calibration armed for the next measurement.</p>";
+        html += "<p>Leave the device in air at " + String(CALIBRATION_PPM) + " ppm (outdoor air), exit the "
+                "server with the [SLEEP] button and let it take the calibration measurement.</p>";
+        html += "<p class=\"links\"><a href=\"/calibrate?cancel=1\">Cancel the calibration</a></p>";
+        Serial.println("[CAL] Calibration armed for the next measurement");
     }
 
     html += backLink;
     html += getHTMLFooter();
+    server.send(200, "text/html", html);
+}
 
-    server.send(success ? 200 : 500, "text/html", html);
+void WebPortal::handleTheme()
+{
+    bool dark = server.arg("dark") != "0";
+    if (dark != darkMode()) {
+        setDarkMode(dark);
+        themeChangedFlag = true;
+    }
+    server.send(204, "text/plain", "");
 }
 
 String WebPortal::getHTMLHeader()
 {
-    return String(FPSTR(HTML_HEADER));
+    String header = String(FPSTR(HTML_HEADER));
+    header.replace("%THEME%", darkMode() ? "" : " data-theme=\"light\"");
+    return header;
 }
 
 // For pages other than the settings page; HTML_FOOTER closes the container and the wrapper
@@ -431,8 +459,7 @@ String WebPortal::getTitleBlock(const char* subtitle)
     block.replace("%SUBTITLE%", subtitle);
     block.replace("%FW_VERSION%", FW_VERSION);
     block.replace("%DEVICE_NAME%", "Ambien-" + deviceSuffix());
-    // Above 4.3 V the battery is on the charger (a resting Li-ion cell stays at or below 4.2 V)
-    bool charging = batteryVoltage > 4.3f;
+    bool charging = batteryCharging(batteryVoltage);
     block.replace("%BATTERY_LEVEL%", charging ? String("charging") : "l" + String(bars));
     block.replace("%BATTERY_VOLTAGE%", charging ? String("Charging") : String(batteryVoltage, 2) + " V");
     return block;
@@ -443,15 +470,6 @@ String WebPortal::getHTMLFooter()
     String footer = String(FPSTR(HTML_FOOTER));
     footer.replace("%FW_VERSION%", FW_VERSION);
     return footer;
-}
-
-static String htmlEscape(String text)
-{
-    text.replace("&", "&amp;");
-    text.replace("\"", "&quot;");
-    text.replace("<", "&lt;");
-    text.replace(">", "&gt;");
-    return text;
 }
 
 // "" instead of "null" for a missing key

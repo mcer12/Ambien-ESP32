@@ -61,6 +61,39 @@ void setOfflineMode(bool on) {
     saveConfig();
 }
 
+bool calibrationPending() {
+    return json["calibrate_pending"].as<bool>();
+}
+
+void armCalibration() {
+    json["calibrate_pending"] = true;
+    saveConfig();
+}
+
+void cancelCalibration() {
+    json["calibrate_pending"] = false;
+    saveConfig();
+}
+
+void finishCalibration(float correction) {
+    json["calibrate_pending"] = false;
+    json["cal_correction"] = correction;
+    saveConfig();
+}
+
+bool darkMode() {
+    return json["dark_mode"].isNull() || json["dark_mode"].as<bool>();
+}
+
+void setDarkMode(bool on) {
+    json["dark_mode"] = on;
+    saveConfig();
+}
+
+bool batteryCharging(float voltage) {
+    return voltage > 4.3f;
+}
+
 bool mqttEnabled() {
     return json["mqtt_enabled"].as<bool>();
 }
@@ -93,4 +126,12 @@ String macToStr(const uint8_t* mac) {
     }
     result.toUpperCase();
     return result;
+}
+
+String htmlEscape(String text) {
+    text.replace("&", "&amp;");
+    text.replace("\"", "&quot;");
+    text.replace("<", "&lt;");
+    text.replace(">", "&gt;");
+    return text;
 }

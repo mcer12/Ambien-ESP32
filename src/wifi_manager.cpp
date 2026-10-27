@@ -7,6 +7,10 @@
 WiFiManager::WiFiManager() : connected(false) {}
 
 bool WiFiManager::begin() {
+    // Shown by the router (DHCP)
+    String hostname = "ambien-" + deviceSuffix();
+    hostname.toLowerCase();
+    WiFi.setHostname(hostname.c_str());
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     delay(100);
@@ -48,7 +52,9 @@ bool WiFiManager::connectToWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
         connected = true;
         Serial.print("[WiFi] Connected! IP: ");
-        Serial.println(WiFi.localIP());
+        Serial.print(WiFi.localIP());
+        Serial.print(", hostname: ");
+        Serial.println(WiFi.getHostname());
         return true;
     }
 

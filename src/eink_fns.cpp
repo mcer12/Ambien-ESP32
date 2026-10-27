@@ -1,15 +1,50 @@
 #include "eink_fns.h"
 #include "scd4x_fns.h"
 #include "sht30_fns.h"
+#include "utils.h"
 #include <PixelFonts.h>
 
 GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(
     GxEPD2_420_GDEY042T81(/*CS=*/EPD_CS, /*DC=*/EPD_DC, /*RST=*/EPD_RST, /*BUSY=*/EPD_BUSY));
 
-#define BUTTON_LABEL_H 22
-#define BUTTON_LABEL_GAP 4
+// Distance between the dots on the two enclosure buttons the labels point at
+#define BUTTON_DOT_GAP 113
+#define BUTTON_LABEL_BAND 37      // bottom edge to the baseline of whatever sits above the labels
+#define BUTTON_LABEL_BASELINE 9  // bottom edge to the label baseline
+#define BUTTON_LABEL_LINE_GAP 6   // top of the label text to the top of the line over it
+#define BUTTON_LABEL_LINE_W 2
+#define BUTTON_LABEL_FOOT_W 12
+#define BUTTON_LABEL_FOOT_LIFT 3  // the bottom edge would swallow a crossbar sitting on it
 
 #define SCREEN_MARGIN_X 6
+
+static uint16_t paperColor() { return darkMode() ? GxEPD_BLACK : GxEPD_WHITE; }
+static uint16_t inkColor() { return darkMode() ? GxEPD_WHITE : GxEPD_BLACK; }
+
+// Border waveform
+#define BORDER_LUT_WHITE 0x01
+#define BORDER_LUT_BLACK 0x02
+
+static void eink_setBorder(uint8_t value) {
+    SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(EPD_DC, LOW);
+    digitalWrite(EPD_CS, LOW);
+    SPI.transfer(0x3C);
+    digitalWrite(EPD_CS, HIGH);
+    digitalWrite(EPD_DC, HIGH);
+    digitalWrite(EPD_CS, LOW);
+    SPI.transfer(value);
+    digitalWrite(EPD_CS, HIGH);
+    SPI.endTransaction();
+}
+
+static void eink_beginFrame() {
+    display.setFullWindow();
+    display.epd2.writeScreenBuffer(darkMode() ? 0x00 : 0xFF);  // runs the driver's init sequence
+    eink_setBorder(darkMode() ? BORDER_LUT_BLACK : BORDER_LUT_WHITE);
+    display.setTextColor(inkColor());
+    display.firstPage();
+}
 
 static void eink_setFont(const GFXfont* font, uint8_t scale = 1) {
     display.setFont(font);
@@ -29,7 +64,6 @@ static int16_t eink_textAdvance(const GFXfont* font, const String& text) {
     return w;
 }
 
-// Text between two EMPHASIS markers is printed in LABEL_FONT
 #define EMPHASIS "\x02"
 
 static void eink_printEmphasized(const String& text) {
@@ -76,8 +110,7 @@ static String eink_wrapLine(const String& line, int16_t maxWidth) {
     return out + current;
 }
 
-// "Label: value" lines: values aligned after the longest label. Other lines are word-wrapped; an empty line is a
-// small paragraph gap. Returns the next baseline.
+// Values are aligned after the longest label of the block. Returns the next baseline
 static int16_t eink_printLines(const String& rawText, int16_t y, int16_t lineHeight = 21) {
     String text;
     for (int start = 0; start >= 0; ) {
@@ -113,7 +146,7 @@ static int16_t eink_printLines(const String& rawText, int16_t y, int16_t lineHei
             eink_setFont(LABEL_FONT);
             display.print(line.substring(0, labelEnd + 1));
             display.setCursor(valueX, y);
-            line = line.substring(labelEnd + 1);  // value, with its leading space
+            line = line.substring(labelEnd + 1);
         }
         eink_printEmphasized(line);
         if (end < 0) return y + lineHeight;
@@ -121,23 +154,34 @@ static int16_t eink_printLines(const String& rawText, int16_t y, int16_t lineHei
     }
 }
 
-static void eink_drawButtonLabel(int16_t x, int16_t y, int16_t w, const String& label) {
-    display.fillRect(x, y, w, BUTTON_LABEL_H, GxEPD_BLACK);
-
+static void eink_drawButtonLabel(const String& label, bool right, int16_t dotX) {
     int16_t tbx, tby; uint16_t tbw, tbh;
     eink_setFont(&pixelfont_13x7_semibold);
     display.getTextBounds(label, 0, 0, &tbx, &tby, &tbw, &tbh);
-    display.setTextColor(GxEPD_WHITE);
-    display.setCursor(x + (w - tbw) / 2 - tbx, y + (BUTTON_LABEL_H - tbh) / 2 - tby);
+
+    int16_t baseline = display.height() - BUTTON_LABEL_BASELINE;
+    int16_t textX = right ? display.width() - SCREEN_MARGIN_X - (int16_t)tbw : SCREEN_MARGIN_X;
+    display.setCursor(textX - tbx, baseline);
     display.print(label);
-    display.setTextColor(GxEPD_BLACK);
+
+    // The drop sits on the outer side of its dot, which mirrors the two around the screen centre
+    int16_t lineY = baseline + tby - BUTTON_LABEL_LINE_GAP;
+    int16_t edgeX = right ? textX + (int16_t)tbw - 1 : textX;
+    int16_t dropX = right ? dotX - BUTTON_LABEL_LINE_W + 1 : dotX;
+    int16_t x0 = min(edgeX, dropX);
+    int16_t x1 = max(edgeX, (int16_t)(dropX + BUTTON_LABEL_LINE_W - 1));
+    display.fillRect(x0, lineY, x1 - x0 + 1, BUTTON_LABEL_LINE_W, inkColor());
+    int16_t footY = display.height() - BUTTON_LABEL_LINE_W - BUTTON_LABEL_FOOT_LIFT;
+    display.fillRect(dropX, lineY, BUTTON_LABEL_LINE_W, footY + BUTTON_LABEL_LINE_W - lineY, inkColor());
+    display.fillRect(dropX - (BUTTON_LABEL_FOOT_W - BUTTON_LABEL_LINE_W) / 2, footY,
+                     BUTTON_LABEL_FOOT_W, BUTTON_LABEL_LINE_W, inkColor());
 }
 
 static void eink_drawButtonLabels(const String& btn1Label, const String& btn2Label) {
-    int16_t labelY = display.height() - BUTTON_LABEL_H;
-    int16_t labelW = (display.width() - BUTTON_LABEL_GAP) / 2;
-    eink_drawButtonLabel(0, labelY, labelW, btn1Label);
-    eink_drawButtonLabel(display.width() - labelW, labelY, labelW, btn2Label);
+    int16_t center = display.width() / 2;
+    // Rounded outwards on the right so an odd gap still moves the pair apart by the full amount
+    eink_drawButtonLabel(btn1Label, false, center - BUTTON_DOT_GAP / 2);
+    eink_drawButtonLabel(btn2Label, true, center + (BUTTON_DOT_GAP + 1) / 2);
 }
 
 void eink_init() {
@@ -149,12 +193,10 @@ void eink_init() {
     display.init(115200, false);
     display.epd2.selectFastFullUpdate(false);  // the fast full refresh comes out gray on this panel
     display.setRotation(2);
-    display.setTextColor(GxEPD_BLACK);
     Serial.println("Display initialized!");
 }
 
-// 3D pixel icons for the sensor screen without CO2, in the style of the 3D fonts (outline + bottom-right shadow,
-// 16 rows like the 13-row value font). One uint16_t per row, MSB = left column.
+// One uint16_t per row, MSB = left column
 #define ICON_ROWS 16
 #define ICON_THERMOMETER_W 11
 static const uint16_t ICON_THERMOMETER[ICON_ROWS] = {
@@ -198,22 +240,20 @@ static const uint16_t ICON_DROP_PERCENT[ICON_ROWS] = {
 static void eink_drawIcon(const uint16_t* rows, int16_t x, int16_t y, uint8_t scale) {
     for (int r = 0; r < ICON_ROWS; r++) {
         for (int c = 0; c < 16; c++) {
-            if (rows[r] & (0x8000 >> c)) display.fillRect(x + c * scale, y + r * scale, scale, scale, GxEPD_BLACK);
+            if (rows[r] & (0x8000 >> c)) display.fillRect(x + c * scale, y + r * scale, scale, scale, inkColor());
         }
     }
 }
 
 void eink_printSensorsData(bool showCO2, float batteryVoltage, String ssid, int wakeIntervalMinutes, String btn1Label, String btn2Label) {
-    // Negative temperatures are rounded to whole degrees so "-12°" still fits the left half.
-    // Degree sign as a single byte: a UTF-8 "°" would also draw 0xC2 (Â). Humidity capped at 99%: always 2 digits.
+    // Rounded and capped so the side-by-side layout always fits; 0xB0 as one byte, a UTF-8 degree would add 0xC2
     String tempStr = (sht30_temp < 0 ? String(lroundf(sht30_temp)) : String(sht30_temp, 1)) + char(0xB0);
     String humStr = String(min((int)sht30_humidity, 99)) + "%";
     const GFXfont* valueFont = &pixelfont_3d_condensed_extended_latin_13x7_semibold;  // 16 rows at 5x = 80 px
 
-    display.setFullWindow();
-    display.firstPage();
+    eink_beginFrame();
     do {
-        display.fillScreen(GxEPD_WHITE);
+        display.fillScreen(paperColor());
 
         if (showCO2) {
             eink_setFont(&pixelfont_3d_condensed_17x7_bold, 5);
@@ -236,8 +276,7 @@ void eink_printSensorsData(bool showCO2, float batteryVoltage, String ssid, int 
             display.setCursor(humX, 242);
             display.print(humStr);
         } else {
-            // No CO2: two rows, icon + value in the CO2 value font (20 rows at 5x = 100 px). The 80 px icons are
-            // centered on the values, in a column as wide as the drop.
+            // The 80 px icons are centered on the 100 px values, in a column as wide as the drop
             const int16_t rowTop[2] = {18, 136}, rowH = 100;
             const int16_t iconColW = ICON_DROP_W * 5, iconDY = (rowH - ICON_ROWS * 5) / 2;
             const int16_t valueX = SCREEN_MARGIN_X + iconColW + 2 * 5;  // 2 value-font pixels after the icon column
@@ -252,8 +291,9 @@ void eink_printSensorsData(bool showCO2, float batteryVoltage, String ssid, int 
         }
 
         const int16_t itemGap = 16;
-        String labels[] = {ssid.length() ? "WiFi:" : "", "Wake:", "Charge:"};
-        String values[] = {ssid.length() ? " " + ssid : String("Offline mode"), " " + String(wakeIntervalMinutes) + " min", " " + String(batteryVoltage, 2) + "V"};
+        String labels[] = {ssid.length() ? "WiFi:" : "", "Wake:", "Battery:"};
+        String values[] = {ssid.length() ? " " + ssid : String("Offline mode"), " " + String(wakeIntervalMinutes) + " min",
+                           batteryCharging(batteryVoltage) ? String(" Charging") : " " + String(batteryVoltage, 2) + "V"};
         int16_t infoW = 2 * itemGap;
         for (int i = 0; i < 3; i++) infoW += eink_textAdvance(LABEL_FONT, labels[i]) + eink_textAdvance(TEXT_FONT, values[i]);
         while (infoW > display.width() - 2 * SCREEN_MARGIN_X && values[0].length() > 4) {  // shorten a long SSID
@@ -261,7 +301,7 @@ void eink_printSensorsData(bool showCO2, float batteryVoltage, String ssid, int 
             values[0] = values[0].substring(0, values[0].length() - (values[0].endsWith("...") ? 4 : 1)) + "...";
             infoW += eink_textAdvance(TEXT_FONT, values[0]);
         }
-        display.setCursor(SCREEN_MARGIN_X, display.height() - BUTTON_LABEL_H - 7);
+        display.setCursor(SCREEN_MARGIN_X, display.height() - BUTTON_LABEL_BAND);
         for (int i = 0; i < 3; i++) {
             if (i > 0) display.setCursor(display.getCursorX() + itemGap, display.getCursorY());
             eink_setFont(LABEL_FONT);
@@ -280,10 +320,9 @@ void eink_printSensorsData(bool showCO2, float batteryVoltage, String ssid, int 
 
 static void eink_displayInfoPage(const String& title, const String& details, const String& instructions,
                                  const String& btn1Label, const String& btn2Label) {
-    display.setFullWindow();
-    display.firstPage();
+    eink_beginFrame();
     do {
-        display.fillScreen(GxEPD_WHITE);
+        display.fillScreen(paperColor());
 
         const GFXfont* titleFont = &pixelfont_3d_condensed_13x7_semibold;
         const int16_t titleLineH = 54;
@@ -322,12 +361,32 @@ void eink_displayWebServerInfo(String title, String details, String instructions
     Serial.println("Webserver info displayed!");
 }
 
-void eink_displayFirstReadingNotice(String btn1Label, String btn2Label) {
-    eink_displayInfoPage("Config saved", "",
-                         "The first reading can be a little off, the electronics are\n"
-                         "still warm from running the server. Later readings settle.",
-                         btn1Label, btn2Label);
+void eink_displayFirstReadingNotice(uint32_t firstReadingS, bool calibrating, String btn1Label, String btn2Label) {
+    if (calibrating) {
+        eink_displayInfoPage("Config saved", "",
+                             "Configuration has been saved, the CO2 sensor will be calibrated on the next wakeup in "
+                             EMPHASIS + String(firstReadingS / 60) + " min" EMPHASIS ".",
+                             btn1Label, btn2Label);
+        Serial.println("Config saved notice displayed, calibration armed!");
+        return;
+    }
+
+    String text = firstReadingS >= 60
+        ? "CO2 measurement has started, the display shows the first reading in "
+          EMPHASIS + String(firstReadingS / 60) + " min" EMPHASIS ".\n\n"
+        : "";
+    text += "The first measurement can be a little off, the electronics are still warm from the WiFi. "
+            "Later readings settle.";
+    eink_displayInfoPage("Config saved", "", text, btn1Label, btn2Label);
     Serial.println("First reading notice displayed!");
+}
+
+void eink_displayCalibrated(uint32_t firstReadingS, String btn1Label, String btn2Label) {
+    eink_displayInfoPage("Calibrated", "",
+                         "The CO2 sensor has been calibrated, the first measurement will show in "
+                         EMPHASIS + String(firstReadingS / 60) + " min" EMPHASIS ".",
+                         btn1Label, btn2Label);
+    Serial.println("Calibrated screen displayed!");
 }
 
 void eink_displayUnableToConnect(String ssid, int wakeIntervalMinutes, String btn1Label, String btn2Label) {
