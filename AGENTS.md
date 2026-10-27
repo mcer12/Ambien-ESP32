@@ -10,10 +10,12 @@ every measurement is published over MQTT, with Home Assistant MQTT discovery.
 - Never commit or push unless the user explicitly asks.
 - Build and flash with PlatformIO from PowerShell, not Git Bash (see Build). Several boards get swapped on the same
   USB port: check the MAC address in the upload log and say which board was flashed.
-- Keep texts on screen left-aligned, except the button labels (centered in their bars).
+- Keep texts on screen left-aligned; the button labels sit at the left and right screen edge (see Fonts and
+  screens).
 - Gaps and offsets on the scaled 3D texts are expressed in font pixels (1 font pixel = the scale, e.g. 4 or 5 px).
 - Comments only where the code is not self-explanatory: the why behind a value, hardware / library quirks, gotchas.
   No comments that restate the code, label sections or describe obvious functions; no commented-out code.
+  One line each, never a paragraph: what needs more than that belongs in this file, not in the source.
 - Never put local paths, user names, credentials or hostnames in tracked files.
 
 ## Build and flash
@@ -46,7 +48,8 @@ every measurement is published over MQTT, with Home Assistant MQTT discovery.
 |---|---|
 | `src/main.cpp` | Wakeup handling and the whole device flow (states, servers, sleep), battery reading |
 | `src/eink_fns.*` | Display object and every screen (sensor page, info pages), fonts, icons, text helpers |
-| `src/web_portal.*` | Captive portal / settings page (`/`, POST `/` saves and restarts, `/calibrate` = SCD4x forced recalibration to 430 ppm). The page is the `SETTINGS_PAGE` template with `%NAME%` placeholders, filled by `getSettingsPage()` |
+| `src/web_portal.*` | Captive portal / settings page (`/`, POST `/` saves and restarts, `/calibrate` arms the SCD4x forced recalibration for the next measurement (`?cancel=1` disarms), `/diag` = sensor and device data, POST `/theme` saves the light / dark switch right away). The page is the `SETTINGS_PAGE` template with `%NAME%` placeholders, filled by `getSettingsPage()` |
+| `src/diagnostics.*` | `diagnosticsHtml()`: SCD4x, SHT30, ESP32, eFuse and WiFi data as an HTML fragment, fetched by the footer's gear icon into the panel under the footer. SCD4x settings are only readable while it idles, ambient pressure only while it measures |
 | `src/mqtt_fns.*` | MQTT client (PubSubClient): publishes a measurement and, when requested, the Home Assistant discovery config |
 | `lib/AmbienMqtt/` | Arduino-independent MQTT payload / discovery JSON builders (unit tested) |
 | `test/` | Unity tests of `lib/` |
@@ -54,7 +57,7 @@ every measurement is published over MQTT, with Home Assistant MQTT discovery.
 | `pcb/` | EasyEDA (Standard) schematic / board source, gerbers, BOM and pick-and-place (exports, edited in EasyEDA only) |
 | `README.md`, `images/` | Public readme; `images/` holds copies of renders from `screenshots/` (refresh them when screens change) |
 | `tools/make_webfonts.py`, `src/web_fonts.h` | PixelFonts converted to WOFF2 web fonts for the portal (generated header, served under `/fonts/`) |
-| `src/wifi_manager.*` | WiFi station connect and the setup AP (`Ambien_` + last 4 hex digits of the MAC, `deviceSuffix()`, open network, `192.168.0.1`) |
+| `src/wifi_manager.*` | WiFi station connect (hostname `ambien-` + the same 4 hex digits, lowercase) and the setup AP (`Ambien_` + last 4 hex digits of the MAC, `deviceSuffix()`, open network, `192.168.0.1`) |
 | `src/utils.*` | Global `json` config, `readConfig()` / `saveConfig()` (`/config.json` on LittleFS), `co2SensorEnabled()`, `offlineMode()` |
 | `src/scd4x_fns.*`, `src/sht30_fns.*` | Sensor init and reading (globals `scd4x_co2`, `sht30_temp`, `sht30_humidity`) |
 
@@ -66,6 +69,12 @@ still named Breathe-ESP32.
 `setup()` reads the config and the wakeup cause, `loop()` runs one path and ends in deep sleep.
 
 - **Timer wakeup / power-on:** measure and show the sensor page, then sleep `wake_interval` minutes.
+  - CO2 warm-up (`warmUpCo2Sensor()`): the SCD4x only measures (low power periodic, ~3.2 mA) for `CO2_WARMUP_S`
+    (3 min, in `scd4x_fns.h`) before each reading and idles (~0.2 mA) otherwise. The calibration uses the same
+    constant: Sensirion needs >3 min of the normal operation mode before a forced recalibration, and a
+    calibration taken at a different warm-up than the readings leaves a permanent offset behind. A wakeup without `RTC_DATA_ATTR co2WarmedUp` starts
+    it and sleeps the warm-up with the radio off; the next wakeup reads it, stops it and sleeps `wake_interval`
+    minus the warm-up, so readings stay `wake_interval` apart. With the 1 minute interval it keeps measuring.
   - No WiFi settings and not in offline mode: fallback setup AP (below).
   - Offline mode: measure without WiFi.
   - The saved WiFi can't be reached: "No connection" screen, normal wake timer, so it retries at the next interval.
@@ -77,16 +86,47 @@ still named Breathe-ESP32.
 - **Fallback setup AP:** 10 min, buttons SLEEP / OFFLINE MODE.
   - SLEEP or timeout: "First run?" screen, sleep until a button press (no timer).
   - In offline mode, SLEEP or timeout goes back to offline measuring instead.
-- **Server session ended / config saved (software reset after the portal saves):** "Config saved" screen, 5 s sleep,
-  then a normal measurement (the first reading can be skewed by heat from the radio).
+- **Server sessions** (AP, local, fallback AP): the SCD4x idles (`idleCo2Sensor()` stops a measurement left running).
+  `/calibrate` only sets `calibrate_pending`; `/diag` only stops and restarts the sensor if it was measuring.
+- **Server session ended / config saved (software reset after the portal saves):** "Config saved" screen (with the
+  CO2 sensor it says the first reading comes in 3 min, so the long sleep doesn't look like a hang), the SCD4x
+  started and a warm-up sleep (5 s without the CO2 sensor), then a normal measurement (the first reading can
+  be skewed by heat from the radio).
+- **Forced recalibration** runs on the measurement path, not in the portal: a measurement wakeup with
+  `calibrate_pending` reads the sensor, then calls `scd4x_calibrate()` (`calibrateCo2Sensor()` in `main.cpp`) and
+  stores the correction in `cal_correction`. A failed recalibration stays armed and retries. The correction
+  corrects the sensor for the state it is calibrated in, and only this path is in the state the readings are
+  taken in: battery, radio off, warmed up through a deep sleep. Calibrating in the portal instead put the
+  difference between an awake USB powered board and a sleeping battery powered one into every reading, by a
+  different amount on every unit, which is what made two calibrated units read ~250 ppm apart while agreeing
+  in the portal.
+  - That wakeup read the sensor before recalibrating it, so its value is stale: the screen shows the
+    "Calibrated" page instead of the sensor page, the MQTT message leaves `co2` out, and it sleeps one
+    `CO2_WARMUP_S` (not `wake_interval`) so the first corrected reading follows in 3 min.
+  - With the calibration armed, the "Config saved" screen says the sensor is calibrated at the next wakeup
+    instead of showing the first-reading notice.
+- ASC (the SCD4x's automatic self-calibration) is switched off at every start (`autoCalibrate` = false in the
+  `scd4x.begin()` calls): it assumes the lowest CO2 it ever sees is 400 ppm and needs continuous operation with
+  daily fresh air, so on a device that sleeps 28 of every 30 minutes indoors it slowly overwrites the forced
+  recalibration with its own guess, by a different amount on every unit. The setting and the altitude only live
+  in the sensor's RAM, so `scd4x_calibrate()` follows the recalibration with one `persistSettings()`: without it
+  a battery swap restores the factory defaults (ASC on) and the drift starts again. It sits on the calibration
+  path and not on the wakeup path because the EEPROM is only good for 2000 writes. The forced recalibration
+  itself has its own EEPROM in the sensor and survives a power cycle either way. ASC corrects nothing before its
+  initial period (44 h of measuring, ~880 wakeups at `CO2_WARMUP_S`), so it is a slow drift, never a fresh
+  calibration gone wrong.
+- Reading the SCD4x while it measures logs three `i2cWrite(): i2c_master_transmit failed` errors: `scd4x_begin()`
+  sends idle-only commands (serial number, ASC) that the sensor refuses then. Harmless.
 - Saving WiFi settings in the portal turns offline mode off.
 
 ## Config keys (`/config.json`)
 
 `ssid`, `pass`, `wake_interval` (minutes, default 30), `co2_sensor` (`"disabled"` skips every SCD4x call and shows the
-no-CO2 layout), `offline_mode` (bool), `temp_scale` (saved, not used yet), `mqtt_enabled` (bool), `mqtt_broker`,
+no-CO2 layout), `offline_mode` (bool), `dark_mode` (bool, on unless set to false: dark portal and inverted
+e-ink screens), `temp_scale` (saved, not used yet), `mqtt_enabled` (bool), `mqtt_broker`,
 `mqtt_port`, `mqtt_user`, `mqtt_pass`, `mqtt_topic` (empty = `ambien/<device id>`), `hass_register` (bool; `"yes"`
-from older firmware also counts). `temp_topic` / `humidity_topic` / `battery_topic` of older firmware are removed on
+from older firmware also counts), `calibrate_pending` (bool, armed in `/calibrate`, cleared by the measurement
+that recalibrates), `cal_correction` (ppm the last recalibration accepted, shown in the `/diag` panel). `temp_topic` / `humidity_topic` / `battery_topic` of older firmware are removed on
 the next save.
 
 ## MQTT and Home Assistant
@@ -117,13 +157,16 @@ the next save.
   baseline). Text is hard-edged through SVG alpha-threshold filters, only at devicePixelRatio 1 (class `crisp`
   on `<html>`): `#crisp` (alpha >= 0.6) for light text on dark, `#crisp-dark-text` (alpha >= 0.5) for dark text
   on light, chosen per theme in the CSS (the button label always uses the other one). Dark mode is the default;
-  the header sun/moon button sets `data-theme="light"` on `<html>` (remembered in localStorage), which swaps the
-  three color variables. Text needs a transparent background (text on a filled box gets its own filtered `span`,
+  the header sun/moon button swaps the three color variables by setting `data-theme="light"` on `<html>` and POSTs
+  the choice to `/theme`, which saves `dark_mode` and lets the e-ink screens follow. The server fills the attribute
+  into the `%THEME%` placeholder of `HTML_HEADER`, so the saved theme is there before the first paint.
+  Text needs a transparent background (text on a filled box gets its own filtered `span`,
   like the button). Anything centered, including the page column itself, must be in `snapToPixels()`: an odd
   free width puts it at x.5 px and the threshold erases 1px strokes.
 - `python tools/render_portal.py`: fills the portal's HTML templates from `src/web_portal.cpp` with sample values and
   screenshots them with headless Edge / Chrome into `screenshots/portal_*`. When a placeholder is added to
-  `SETTINGS_PAGE`, add a sample value to the script (it stops on unfilled placeholders).
+  `SETTINGS_PAGE`, add a sample value to the script (it stops on unfilled placeholders). The `*_diag` variants show
+  the data panel open with `DIAG_SAMPLE`: keep it in step with `src/diagnostics.cpp`.
 
 ## Display
 
@@ -134,9 +177,17 @@ the next save.
 - `display.init(115200, false)`: one refresh pass per wakeup instead of a clearing pass + the image. Switch back to
   `true` if ghosting ever shows.
 - Never use partial refresh: the panel's OTP partial waveform flashes and darkens the whole screen.
+- The border around the image follows the waveform LUT selected by SSD1683 command 0x3C: LUT1 (`0x01`, what the
+  driver's init sends) leaves it white, LUT2 (`0x02`) black. GxEPD2 keeps `_writeCommand()` protected and sends its
+  init (with a SWRESET) at the first write to the panel, so `eink_beginFrame()` writes a screen buffer first, then
+  sends 0x3C over raw SPI, then draws: the order matters, the panel forgets the setting at every hibernate.
 - `eink_init()` sets the CS / RST / DC pins as outputs before `display.init()` to avoid ESP32 core 3.x GPIO errors.
 
 ## Fonts and screens
+
+- `dark_mode` inverts every screen: `paperColor()` / `inkColor()` in `eink_fns.cpp` replace the fixed
+  `GxEPD_WHITE` / `GxEPD_BLACK`, the button bars and the icons included. The portal's theme switch redraws the
+  page on the panel during a server session (`WebPortal::themeChanged()`, the `redraw` lambda in `main.cpp`).
 
 - All text uses the PixelFonts library (`https://github.com/mcer12/PixelFonts`). Big text is a 1 px font scaled
   with `setTextSize()` through `eink_setFont(font, scale)`; always set the scale (1 = native) when switching fonts.
@@ -146,11 +197,16 @@ the next save.
   - Temperature / humidity values: `pixelfont_3d_condensed_extended_latin_13x7_semibold` x5.
   - With the CO2 sensor disabled the values use `..._extended_latin_17x7_bold` x5, with the thermometer and drop
     icons (`ICON_*` bitmaps: 16 rows, one `uint16_t` per row, MSB = left column, drawn x5 by `eink_drawIcon()`).
-- Info pages (Access Point, Local Server, Config saved, First run?, No connection) share `eink_displayInfoPage()`.
+- Info pages (Access Point, Local Server, Config saved, Calibrated, First run?, No connection) share
+  `eink_displayInfoPage()`.
   - Title: `pixelfont_3d_condensed_13x7_semibold` x3. A title too wide for the screen wraps onto a second line.
   - Labels and highlighted words: `LABEL_FONT`. Everything else, including the sensor page footer: `TEXT_FONT`.
     Both are set at the top of `eink_fns.cpp` (currently `pixelfont_13x7_semibold` / `pixelfont_13x7_thin`).
-- Button labels: `pixelfont_13x7_semibold`, white on black bars.
+- Button labels: `pixelfont_13x7_semibold` at the left and right screen edge, no bars. A line runs over the
+  label, flush with the text, and turns down to the bottom edge above the dot on the physical button it
+  belongs to, so the label points at its button. The two buttons sit close together in the middle of the
+  enclosure: `BUTTON_DOT_GAP` in `eink_fns.cpp` is their dot centre to dot centre distance, and the drops are
+  placed symmetrically around the screen centre.
 - `eink_printLines()` text format: `'\n'` separates lines.
   - `"Label: value"` lines get the label in `LABEL_FONT` and all values of the block aligned after the longest label.
   - Text between two `EMPHASIS` (`"\x02"`) markers is printed in `LABEL_FONT`.
