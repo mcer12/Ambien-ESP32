@@ -4,8 +4,8 @@ Ambien is an open source ESP32 based CO2, temperature and humidity sensor with a
 
 To have some fun I went for a pixel design here, using my other project [PixelFonts](https://github.com/mcer12/PixelFonts) for a retro / paper look.
 
-Device screen:
-![alt text](images/screen_sensors.png)
+Device:
+![alt text](images/image.jpg)
 
 Web portal:
 ![alt text](images/portal_light.png)
