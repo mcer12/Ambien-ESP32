@@ -1,6 +1,6 @@
 # Ambien
 
-Ambien is an open source ESP32 based CO2, temperature and humidity sensor with a 4.2" e-paper display. It's made to sit on a shelf and be forgotten about: it wakes up, measures, refreshes the screen and goes back to deep sleep, so a single can last for years. It is meant to be used with Home Assistant (or any other platform that supports MQTT) but it can also be used completely offline as a display.
+Ambien is an open source ESP32 based CO2, temperature and humidity sensor with a 4.2" e-paper display. It's made to sit on a shelf and be forgotten about: it wakes up, measures, refreshes the screen and goes back to deep sleep, so a single charge lasts up to a year. It is meant to be used with Home Assistant (or any other platform that supports MQTT) but it can also be used completely offline as a display.
 
 To have some fun I went for a pixel design here, using my other project [PixelFonts](https://github.com/mcer12/PixelFonts) for a retro / paper look.
 
@@ -9,6 +9,9 @@ Device:
 
 Web portal:
 ![alt text](images/portal_light.png)
+
+## Status
+The project is considered done. Firmware, PCB files and 3D models are all included in the repo.
 
 ## Hardware
 
@@ -19,7 +22,7 @@ All pcb source files (EasyEDA) including gerber, schematic etc. are included in 
 - **CO2, temperature, humidity**: Sensirion SCD4x for CO2 and SHT30 for temperature and humidity.
 - **CO2 sensor is optional**: If you don't need it, disable it in the settings and the screen switches to a big temperature + humidity layout.
 - **USB-C** for charging and upload / debugging
-- **Long battery life**: The ESP32 spends almost all its time in deep sleep. WiFi is only on for the few seconds it takes to send the data and the CO2 sensor also runs in low power mode. Coupled with (insane) 2x 18650 slot, it can run for years easily.
+- **Long battery life**: The ESP32 spends almost all its time in deep sleep. WiFi is only on for the few seconds it takes to send the data and the CO2 sensor also runs in low power mode. Coupled with (insane) 2x 18650 slot, it runs up to a year with the CO2 sensor, and multiple years with the temperature / humidity sensor only.
 - **Battery options**: You can omit the 18650 slots and battery protection and use a flat lipo battery instead
 - **Integrated TP4057** lipo charger
 - **Optional FS312F-G protection** chip with a higher cutoff threshold to save battery health
